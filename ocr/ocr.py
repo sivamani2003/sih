@@ -1,50 +1,149 @@
 import pytesseract
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageFilter
+import fitz  # PyMuPDF
+import os
 import re
+custom_config = r'--oem 3 --psm 6'
+# Path to tesseract executable
 
-# Load the image
-img = Image.open("/Users/sivamani/Desktop/sih/ocr/Transfer certificate - inter.jpeg")
 
-# Extract text using Tesseract
-extracted_text = pytesseract.image_to_string(img)
-print("Extracted text:", extracted_text)
-
-# Clean the text
-cleaned_text = re.sub(r'\n+', ' ', extracted_text)  # Remove line breaks
-cleaned_text = re.sub(r'[^a-zA-Z0-9\s]', '', cleaned_text)  # Remove special characters
-print("Cleaned text:", cleaned_text)
-
-# Dictionary of castes and categories
-caste_dict = {
-    # Forward Castes (General Category)
-    'Brahmin': 'Forward Caste', 'Kshatriya': 'Forward Caste', 'Vaishya': 'Forward Caste', 'Vysya': 'Forward Caste',
-    'Velama': 'Forward Caste', 'Kapu': 'Forward Caste', 'Reddy': 'Forward Caste',
+# Convert PDF to images using PyMuPDF
+def convert_pdf_to_images(pdf_path, output_folder):
+    doc = fitz.open(pdf_path)
+    image_paths = []
     
-    # Backward Classes (OBC)
-    'Agnikulakshatriya': 'OBC', 'Arya Vysya': 'OBC', 'Balija': 'OBC', 'Bestha': 'OBC', 'Chakali': 'OBC', 'Ediga': 'OBC',
-    'Goud': 'OBC', 'Kuruba': 'OBC', 'Madiga': 'OBC', 'Mangali': 'OBC', 'Mudaliar': 'OBC', 'Mudiraj': 'OBC',
-    'Mutrasi': 'OBC', 'Padmasali': 'OBC', 'Rajaka': 'OBC', 'Setti Balija': 'OBC', 'Telaga': 'OBC', 'Uppara': 'OBC',
-    'Vaddera': 'OBC', 'Yadava': 'OBC', 'Perika': 'OBC', 'Thogata Veera Kshatriya': 'OBC',
+    for page_num in range(doc.page_count):
+        page = doc.load_page(page_num)
+        pix = page.get_pixmap()
+        image_path = os.path.join(output_folder, f"page_{page_num + 1}.png")
+        pix.save(image_path)
+        image_paths.append(image_path)
     
-    # Scheduled Castes (SC)
-    'Adi Andhra': 'SC', 'Mala': 'SC', 'Madiga': 'SC', 'Dommara': 'SC', 'Pambada': 'SC', 'Chamar': 'SC',
-    'Dakkal': 'SC', 'Jambavan': 'SC', 'Masti': 'SC', 'Dhangar': 'SC',
-    
-    # Scheduled Tribes (ST)
-    'Koya': 'ST', 'Lambada': 'ST', 'Yanadi': 'ST', 'Sugali': 'ST', 'Gond': 'ST', 'Nayak': 'ST', 'Yerukala': 'ST',
-    'Chenchu': 'ST', 'Kondareddy': 'ST', 'Kondh': 'ST',
-    
-    # Other categories
-    'Shudra': 'Other', 'SC': 'Scheduled Caste', 'ST': 'Scheduled Tribe', 'OBC': 'Other Backward Class','OC':'OC'
-}
+    return image_paths
 
-# Function to extract caste from the text
+# Extract text from images using Tesseract-OCR
+def extract_text_from_images(image_paths):
+    extracted_text = ""
+    
+    for image_path in image_paths:
+        img = Image.open(image_path)
+        # Preprocess the image: Convert to grayscale and apply sharpening
+        img = img.convert('L')  # Convert to grayscale
+        img = img.filter(ImageFilter.SHARPEN)  # Sharpen the image
+        img = ImageEnhance.Contrast(img).enhance(2)  # Increase contrast
+        
+        text = pytesseract.image_to_string(img)
+        extracted_text += text + "\n"
+    
+    return extracted_text
+
+# Split text into words based on multiple delimiters
+def split_text_into_words(text):
+    words = re.split(r'[ \(\)\[\]\{\},.:;!?_-]', text)
+    words = [word.strip() for word in words if word.strip()]
+    return words
+
+# Clean text
+def clean_text(word_list):
+    cleaned_text = ' '.join(word_list)
+    cleaned_text = cleaned_text.strip().lower()
+    return cleaned_text
+
+# Extract caste from the cleaned text
 def extract_caste(text, caste_dict):
     for caste, category in caste_dict.items():
-        if caste.lower() in text.lower():
+        if re.search(rf'\b{re.escape(caste.lower())}\b', text, re.IGNORECASE):
             return f"{caste} ({category})"
     return 'Caste not found'
 
-# Extract caste information
-caste_info = extract_caste(cleaned_text, caste_dict)
+# Main function to handle the PDF or image upload and OCR
+def process_file_for_ocr(file_path, output_folder, caste_dict):
+    _, file_extension = os.path.splitext(file_path)
+    file_extension = file_extension.lower()
+    
+    if file_extension == ".pdf":
+        print("Processing PDF file...")
+        image_paths = convert_pdf_to_images(file_path, output_folder)
+        extracted_text = extract_text_from_images(image_paths)
+        
+        for image_path in image_paths:
+            os.remove(image_path)
+    
+    elif file_extension in [".jpg", ".jpeg", ".png", ".bmp", ".tiff"]:
+        print("Processing image file...")
+        img = Image.open(file_path)
+        img = img.convert('L')
+        img = img.filter(ImageFilter.SHARPEN)
+        img = ImageEnhance.Contrast(img).enhance(2)
+        extracted_text = pytesseract.image_to_string(img)
+    
+    else:
+        raise ValueError(f"Unsupported file type: {file_extension}")
+    
+    # Split, clean and extract caste
+    words = split_text_into_words(extracted_text)
+    cleaned_text = clean_text(words)
+    caste_info = extract_caste(cleaned_text, caste_dict)
+    
+    return caste_info
+
+# Example usage
+file_path = r"/Users/sivamani/Desktop/sih/ocr/Transfer certificate - inter.jpeg"
+output_folder = "/Users/sivamani/Desktop/sih/ocr"
+caste_dict = {
+    
+    
+    # Other Backward Classes (OBC)
+    'Kurmi': 'OBC', 'Yadav': 'OBC', 'Jat': 'OBC', 'Lohar': 'OBC', 'Teli': 'OBC', 'Kumhar': 'OBC', 'Darzi': 'OBC',
+    'Banjara': 'OBC', 'Sonar': 'OBC', 'Gupta': 'OBC', 'Sahu': 'OBC', 'Kalal': 'OBC', 'Bairwa': 'OBC', 'Koli': 'OBC',
+    'Meo': 'OBC', 'Ahir': 'OBC', 'Nai': 'OBC', 'Kashyap': 'OBC', 'Gondhali': 'OBC', 'Kahar': 'OBC', 'Dhobi': 'OBC',
+    'Patwa': 'OBC', 'Kachhi': 'OBC', 'Mallaha': 'OBC', 'Saini': 'OBC', 'Gurjar': 'OBC', 'Kalwar': 'OBC',
+    'Prajapati': 'OBC', 'Rajbhar': 'OBC', 'Kevat': 'OBC', 'Khatik': 'OBC', 'Lodhi': 'OBC', 'Nat': 'OBC',
+    'Nonia': 'OBC', 'Koeri': 'OBC', 'Tanti': 'OBC', 'Karmakar': 'OBC', 'Chandravanshi': 'OBC', 'Mahishya': 'OBC',
+    'Sadgop': 'OBC', 'Kaibarta': 'OBC', 'Sunri': 'OBC', 'Khandayat': 'OBC', 'Gudia': 'OBC', 'Gopala': 'OBC',
+    'Chasa': 'OBC', 'Mali': 'OBC', 'Ahom': 'OBC', 'Chutia': 'OBC', 'Koch': 'OBC', 'Meitei': 'OBC', 'Agnikulakshatriya': 'OBC',
+    'Arya Vysya': 'OBC', 'Balija': 'OBC', 'Bestha': 'OBC', 'Chakali': 'OBC', 'Ediga': 'OBC', 'Goud': 'OBC', 'Kuruba': 'OBC',
+    'Mangali': 'OBC', 'Mudaliar': 'OBC', 'Mudiraj': 'OBC', 'Mutrasi': 'OBC', 'Padmasali': 'OBC', 'Rajaka': 'OBC',
+    'Setti Balija': 'OBC', 'Telaga': 'OBC', 'Uppara': 'OBC', 'Vaddera': 'OBC', 'Yadava': 'OBC', 'Perika': 'OBC',
+    'Thogata Veera Kshatriya': 'OBC', 'Vanniyar': 'OBC', 'Thevar': 'OBC', 'Gounder': 'OBC', 'Vannar': 'OBC',
+    'Maravar': 'OBC', 'Ganiga': 'OBC', 'Madivala': 'OBC', 'Ezhava': 'OBC', 'Thiyya': 'OBC', 'Vishwakarma': 'OBC',
+    'Billava': 'OBC','Dhangar': 'OBC',
+    
+    # Forward Castes (General Category)
+    'Brahmin': 'Forward Caste', 'Kshatriya': 'Forward Caste', 'Vaishya': 'Forward Caste', 'Kayastha': 'Forward Caste',
+    'Rajput': 'Forward Caste', 'Thakur': 'Forward Caste', 'Bhumihar': 'Forward Caste', 'Tyagi': 'Forward Caste',
+    'Agarwal': 'Forward Caste', 'Khatri': 'Forward Caste', 'Punjabi Khatri': 'Forward Caste', 'Arora': 'Forward Caste',
+    'Sindhi': 'Forward Caste', 'Gaur Brahmin': 'Forward Caste', 'Chandravanshi Kshatriya': 'Forward Caste',
+    'Madhesiya': 'Forward Caste', 'Khandelwal': 'Forward Caste', 'Vaishnav': 'Forward Caste', 'Oswal': 'Forward Caste',
+    'Digambar Jain': 'Forward Caste', 'Svetambar Jain': 'Forward Caste', 'Baidya': 'Forward Caste',
+    'Kayastha Bengali': 'Forward Caste', 'Brahmin Bengali': 'Forward Caste', 'Karana': 'Forward Caste',
+    'Brahmin Assamese': 'Forward Caste', 'Kalita': 'Forward Caste', 'Kamma': 'Forward Caste', 'Reddy': 'Forward Caste',
+    'Velama': 'Forward Caste', 'Kapu': 'Forward Caste', 'Vysya': 'Forward Caste', 'Iyer': 'Forward Caste',
+    'Iyengar': 'Forward Caste', 'Mudaliar': 'Forward Caste', 'Nadar': 'Forward Caste', 'Vellalar': 'Forward Caste',
+    'Chettiar': 'Forward Caste', 'Lingayat': 'Forward Caste', 'Vokkaliga': 'Forward Caste', 'Namboodiri Brahmin': 'Forward Caste',
+    'Nair': 'Forward Caste', 'Menon': 'Forward Caste','OC': 'OC',
+
+
+
+    # Scheduled Castes (SC)
+    'Chamar': 'SC', 'Jatav': 'SC', 'Valmiki': 'SC', 'Mahar': 'SC', 'Bhangi': 'SC', 'Pasi': 'SC', 'Balmiki': 'SC',
+    'Khatik': 'SC', 'Dhobi': 'SC', 'Musahar': 'SC', 'Dhanuk': 'SC', 'Dom': 'SC', 'Kori': 'SC', 'Dusadh': 'SC',
+    'Halalkhor': 'SC', 'Koli': 'SC', 'Mehtar': 'SC', 'Bhovi': 'SC', 'Hajjam': 'SC', 'Rai Sikh': 'SC', 'Bagdi': 'SC',
+    'Namasudra': 'SC', 'Rajbanshi': 'SC', 'Bauri': 'SC', 'Adi Andhra': 'SC', 'Mala': 'SC', 'Madiga': 'SC',
+    'Dommara': 'SC', 'Pambada': 'SC', 'Dakkal': 'SC', 'Jambavan': 'SC', 'Masti': 'SC', 'Pulaya': 'SC',
+    'Paraiyar': 'SC', 'Pallan': 'SC', 'Arunthathiyar': 'SC', 'Chakkiliyar': 'SC', 'Holeya': 'SC', 'Cheruman': 'SC',
+    'Mannan': 'SC', 'Valluvan': 'SC','Madiga': 'SC','Mala':'SC',
+
+    # Scheduled Tribes (ST)
+    'Santhal': 'ST', 'Oraon': 'ST', 'Munda': 'ST', 'Meena': 'ST', 'Gond': 'ST', 'Bhil': 'ST', 'Sahariya': 'ST',
+    'Lodha': 'ST', 'Kharwar': 'ST', 'Khond': 'ST', 'Korku': 'ST', 'Bhot': 'ST', 'Pahari Korwa': 'ST', 'Tharu': 'ST',
+    'Kol': 'ST', 'Baiga': 'ST', 'Bhutia': 'ST', 'Bodo': 'ST', 'Mishing': 'ST', 'Deori': 'ST', 'Rabha': 'ST',
+    'Karbi': 'ST', 'Naga': 'ST', 'Khasi': 'ST', 'Garo': 'ST', 'Hmar': 'ST', 'Kuki': 'ST', 'Biate': 'ST', 'Tiwa': 'ST',
+    'Dimasa': 'ST', 'Koya': 'ST', 'Lambada': 'ST', 'Yanadi': 'ST', 'Sugali': 'ST', 'Yerukala': 'ST', 'Chenchu': 'ST',
+    'Kondareddy': 'ST', 'Irula': 'ST', 'Kaniyan': 'ST', 'Kattunayakan': 'ST', 'Kurumba': 'ST', 'Paliyan': 'ST',
+    'Soliga': 'ST', 'Jenukuruba': 'ST', 'Koraga': 'ST', 'Toda': 'ST', 'Siddis': 'ST', 'Paniya': 'ST',
+    'Kurichiya': 'ST', 'Malayarayan': 'ST', 'Kadar': 'ST', 'Adiyan': 'ST'
+}
+
+caste_info = process_file_for_ocr(file_path, output_folder, caste_dict)
 print(f"Caste identified: {caste_info}")
